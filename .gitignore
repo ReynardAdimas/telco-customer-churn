@@ -1,0 +1,4 @@
+mlruns/
+artifacts/
+data/raw/
+data/processed/
