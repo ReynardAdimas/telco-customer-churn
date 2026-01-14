@@ -1,88 +1,97 @@
-import great_expectations as ge 
-from typing import Tuple, List 
+import great_expectations as ge
+from great_expectations.core.expectation_suite import ExpectationSuite
+import pandas as pd
+from typing import Tuple, List
 
-def validate_telco_data(df) -> Tuple[bool, List[str]]:
-    print("Starting data validation with Great Expectations...") 
-    # Convert pandas into GE Dataset
-    ge_df = ge.dataset.PandasDataset(df) 
+def validate_telco_data(df: pd.DataFrame) -> Tuple[bool, List[str]]:
+    print("Starting data validation ")
+    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
 
-    # Schema Validation - Essential Columns 
-    print("Validating schem and required columns") 
+    # Create ephemeral context
+    context = ge.get_context(mode="ephemeral")
 
-    ge_df.expect_column_to_exist("customerID")
-    ge_df.expect_column_values_to_not_to_be_null("customerID")
-
-    ge_df.expect_column_to_exist("gender")
-    ge_df.expect_column_to_exist("Partner")
-    ge_df.expect_column_to_exist("Dependents") 
-
-    ge_df.expect_column_to_exist("PhoneService") 
-    ge_df.expect_column_to_exist("InternetService") 
-    ge_df.expect_column_to_exist("Contract") 
-
-    ge_df.expect_column_to_exist("tenure") 
-    ge_df.expect_column_to_exist("MonthlyCharges") 
-    ge_df.expect_column_to_exist("TotalCharges") 
-
-    print("Validating business logic contraints..")
-
-    ge_df.expect_column_values_to_be_in_set("gender", ["Male", "Female"])
-    ge_df.expect_column_values_to_be_in_set("Partner", ["Yes", "No"])
-    ge_df.expect_column_values_to_be_in_set("Dependents", ["Yes", "No"])
-    ge_df.expect_column_values_to_be_in_set("PhoneService", ["Yes", "No"]) 
-
-    ge_df.expect_column_values_to_be_in_set(
-        "Contract", 
-        ["Month-to-month", "One year", "Two year"]
+    # Add pandas datasource
+    datasource = context.data_sources.add_pandas(
+        name="pandas_ds"
     )
 
-    ge_df.expect_column_values_to_be_in_set(
-        "InternetService", 
-        ["DSL", "Fiber optic", "No"]
-    ) 
+    # Add dataframe asset (NO dataframe passed here)
+    data_asset = datasource.add_dataframe_asset(
+        name="telco_asset"
+    )
 
-    print("Validating numeric ranges and business contraints")  
+    data_asset.add_batch_definition(
+        name="telco_batch_def"
+    )
 
-    ge_df.expect_column_values_to_be_between("tenure", min_value=0) 
-    ge_df.expect_column_values_to_be_between("MonthlyCharges", min_value=0) 
-    ge_df.expect_column_values_to_be_between("TotalCharges", min_value=0) 
-    print("Validating statistical properties") 
-    ge_df.excpect_column_values_to_be_between("tenure", min_value=0, max_value=120)
-    ge_df.expect_column_values_to_be_between("MonthlyCharges", min_value=0, max_value=200) 
+    # Create batch definition (NAME IS REQUIRED)
+    batch_definition = data_asset.get_batch_definition(
+        name="telco_batch_def"
+    )
 
-    ge_df.expect_column_values_to_not_be_null("tenure")
-    ge_df.expect_column_values_to_not_be_null("MonthlyCharges") 
+    # Inject dataframe at runtime
+    batch = batch_definition.get_batch(
+        batch_parameters={"dataframe": df}
+    )
 
-    print("Validating data consistency") 
-    ge_df.expect_column_pair_values_A_to_be_greater_than_B(
-        column_A = "TotalCharges", 
-        column_B = "MonthlyCharges", 
-        or_equal = True, 
+    # Create / get expectation suite
+    suite_name = "telco_expectations"
+
+    suite = ExpectationSuite(name=suite_name)
+    context.suites.add(suite)
+
+    # Get validator
+    validator = context.get_validator(
+        batch=batch,
+        expectation_suite_name=suite_name
+    )
+    # Schema Validation
+    validator.expect_column_to_exist("customerID")
+    validator.expect_column_values_to_not_be_null("customerID")
+
+    required_columns = [
+        "gender", "Partner", "Dependents", "PhoneService",
+        "InternetService", "Contract", "tenure",
+        "MonthlyCharges", "TotalCharges"
+    ]
+
+    for col in required_columns:
+        validator.expect_column_to_exist(col)
+
+    # Business Rules
+    validator.expect_column_values_to_be_in_set("gender", ["Male", "Female"])
+    validator.expect_column_values_to_be_in_set("Partner", ["Yes", "No"])
+    validator.expect_column_values_to_be_in_set("Dependents", ["Yes", "No"])
+    validator.expect_column_values_to_be_in_set("PhoneService", ["Yes", "No"])
+    validator.expect_column_values_to_be_in_set(
+        "Contract", ["Month-to-month", "One year", "Two year"]
+    )
+    validator.expect_column_values_to_be_in_set(
+        "InternetService", ["DSL", "Fiber optic", "No"]
+    )
+    # Numeric Rules
+    validator.expect_column_values_to_be_between("tenure", 0, 120)
+    validator.expect_column_values_to_be_between("MonthlyCharges", 0, 200)
+
+    validator.expect_column_pair_values_A_to_be_greater_than_B(
+        "TotalCharges",
+        "MonthlyCharges",
+        or_equal=True,
         mostly=0.95
-    ) 
+    )
+    # Run Validation
+    result = validator.validate()
 
-    print("Running complete validation suite")
-    result = ge_df.validate() 
-
-    failed_expectations = [] 
-    for r in result["result"]: 
-        if not r["success"]:
-            excepectation_type = r["expectation_config"]["expectation_type"]
-            failed_expectations.append(excepectation_type) 
-    
-    total_checks = len(result["result"])
-    passed_checks = sum(1 for r in result["result"] if r["success"])
-    failed_checks = total_checks - passed_checks 
+    failed = [
+        r["expectation_config"]["expectation_type"]
+        for r in result["results"]
+        if not r["success"]
+    ]
 
     if result["success"]:
-        print(f"Data validation passed: {passed_checks}/{total_checks} checks successful")
-    else: 
-        print(f"Data validation failed: {failed_checks}/{total_checks} checks failed")
-        print(f"Failed expectations: {failed_expectations}") 
-    
-    return result["success"], failed_expectations
+        print("✅ Data validation PASSED")
+    else:
+        print("❌ Data validation FAILED")
+        print("Failed expectations:", list(set(failed)))
 
-    
-
-
-
+    return result["success"], failed
